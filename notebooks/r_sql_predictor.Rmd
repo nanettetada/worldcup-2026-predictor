@@ -1,0 +1,386 @@
+---
+title: "World Cup 2026 Predictor — R + SQL"
+author: "Tadaishe Maumbe"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+```
+
+# Overview
+
+This notebook is the R-language sibling of `python_sql_predictor.ipynb`. Both
+read from the same SQLite database (`data/wc2026.sqlite`) built by
+`src/build_db.py`, and both fit the same Dixon–Coles bivariate Poisson model
+to international match data so the two language paths can be cross-checked.
+
+The plan:
+
+1. Connect to SQLite and inspect the three core tables (results, FIFA
+   rankings, EA FC squad ratings).
+2. Engineer a strength score per team that blends FIFA points and EA squad
+   overall.
+3. Fit Dixon–Coles on time-decayed historical international matches.
+4. Layer the corners / cards baseline and the penalty shootout model.
+5. Monte-Carlo the group stage (10 000 runs), resolve advancing teams,
+   simulate the knockout bracket, write predictions back to the database.
+6. Visualise the bracket and headline numbers.
+
+```{r packages}
+library(DBI)
+library(RSQLite)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(stringr)
+library(lubridate)
+library(MASS)
+```
+
+# 1. Connect to the database
+
+```{r connect}
+db_path <- file.path("..", "data", "wc2026.sqlite")
+con <- dbConnect(SQLite(), db_path)
+dbListTables(con)
+```
+
+```{r inspect-tables}
+tibble(
+  table = c("historical_matches", "fifa_rankings", "player_ratings",
+            "team_squad_strength", "wc2026_groups", "wc2026_fixtures"),
+  rows  = sapply(c("historical_matches", "fifa_rankings", "player_ratings",
+                   "team_squad_strength", "wc2026_groups", "wc2026_fixtures"),
+                 function(t) dbGetQuery(con,
+                   sprintf("SELECT COUNT(*) AS n FROM %s", t))$n)
+)
+```
+
+# 2. Build the team strength feature
+
+The strength score blends two signals:
+
+- **EA FC 26 squad overall** (top-11 average) — reflects current talent.
+- **FIFA ranking points** (most recent) — reflects recent results.
+
+```{r strength}
+sql_strength <- "
+  WITH latest_rank AS (
+    SELECT team, rank, points,
+           ROW_NUMBER() OVER (PARTITION BY team ORDER BY rank_date DESC) AS rn
+    FROM fifa_rankings
+  )
+  SELECT g.team,
+         s.squad_overall_top11,
+         s.squad_attack_mean,
+         s.squad_defense_mean,
+         r.rank   AS fifa_rank,
+         r.points AS fifa_points
+  FROM wc2026_groups g
+  LEFT JOIN team_squad_strength s ON s.team = g.team
+  LEFT JOIN latest_rank r ON r.team = g.team AND r.rn = 1;
+"
+strength <- dbGetQuery(con, sql_strength)
+
+# Z-score blend
+zscore <- function(x) (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+strength <- strength |>
+  mutate(z_squad = zscore(squad_overall_top11),
+         z_fifa  = zscore(fifa_points),
+         strength = 0.6 * coalesce(z_squad, 0) + 0.4 * coalesce(z_fifa, 0))
+
+strength |> arrange(desc(strength)) |> head(15)
+```
+
+# 3. Fit Dixon-Coles
+
+```{r dc-data}
+hist <- dbGetQuery(con, "
+  SELECT match_date, home_team, away_team, home_score, away_score, neutral
+  FROM historical_matches
+  WHERE match_date >= '2014-01-01'                -- last ~12 years
+    AND home_score IS NOT NULL
+    AND away_score IS NOT NULL;
+") |>
+  mutate(match_date = as.Date(match_date),
+         neutral = as.integer(coalesce(neutral, 0)))
+
+ref_date <- as.Date("2026-06-10")
+hist <- hist |>
+  mutate(days = as.numeric(ref_date - match_date),
+         weight = exp(-0.0019 * days))
+nrow(hist)
+```
+
+```{r dc-fit}
+teams <- sort(unique(c(hist$home_team, hist$away_team)))
+n <- length(teams)
+idx <- setNames(seq_along(teams), teams)
+
+dc_correction <- function(x, y, lam, mu, rho) {
+  ifelse(x == 0 & y == 0, 1 - lam * mu * rho,
+  ifelse(x == 0 & y == 1, 1 + lam * rho,
+  ifelse(x == 1 & y == 0, 1 + mu * rho,
+  ifelse(x == 1 & y == 1, 1 - rho, 1))))
+}
+
+neg_ll <- function(par) {
+  attack  <- par[1:n] - mean(par[1:n])
+  defense <- par[(n + 1):(2 * n)]
+  ha <- par[2 * n + 1]
+  rho <- par[2 * n + 2]
+  hi <- idx[hist$home_team]; ai <- idx[hist$away_team]
+  lam <- exp(attack[hi] + defense[ai] + ha * (1 - hist$neutral))
+  mu  <- exp(attack[ai] + defense[hi])
+  ll <- hist$home_score * log(lam) - lam +
+        hist$away_score * log(mu)  - mu -
+        lfactorial(hist$home_score) - lfactorial(hist$away_score)
+  corr <- pmax(dc_correction(hist$home_score, hist$away_score, lam, mu, rho), 1e-12)
+  -sum((ll + log(corr)) * hist$weight)
+}
+
+start <- c(rep(0, n), rep(0, n), 0.25, -0.05)
+fit <- optim(start, neg_ll, method = "L-BFGS-B",
+             control = list(maxit = 200))
+
+attack  <- fit$par[1:n]; attack <- attack - mean(attack)
+defense <- fit$par[(n + 1):(2 * n)]
+home_adv <- fit$par[2 * n + 1]
+rho      <- fit$par[2 * n + 2]
+list(home_adv = home_adv, rho = rho, n_teams = n)
+```
+
+```{r dc-strengths}
+dc_params <- tibble(team = teams, attack = attack, defense = defense) |>
+  mutate(attack_rank = rank(-attack))
+dc_params |> arrange(desc(attack)) |> head(15)
+```
+
+# 4. Score matrix helper
+
+```{r score-matrix}
+score_matrix <- function(home, away, neutral = TRUE, max_goals = 8) {
+  if (!(home %in% teams) || !(away %in% teams)) return(NULL)
+  ha <- if (neutral) 0 else home_adv
+  lam <- exp(attack[idx[home]] + defense[idx[away]] + ha)
+  mu  <- exp(attack[idx[away]] + defense[idx[home]])
+  m <- outer(dpois(0:max_goals, lam), dpois(0:max_goals, mu))
+  for (h in 0:1) for (a in 0:1) m[h + 1, a + 1] <-
+    m[h + 1, a + 1] * dc_correction(h, a, lam, mu, rho)
+  m / sum(m)
+}
+
+modal_score <- function(home, away, neutral = TRUE) {
+  m <- score_matrix(home, away, neutral)
+  i <- which(m == max(m), arr.ind = TRUE)[1, ]
+  list(home = i[1] - 1, away = i[2] - 1)
+}
+
+# Sanity check
+modal_score("Brazil", "Scotland")
+```
+
+# 5. Corners / cards baseline + penalty model
+
+```{r baselines}
+wc_avg <- list(
+  GROUP = list(corners = 9.3, yellows = 3.8, p_red = 0.06),
+  R32   = list(corners = 9.7, yellows = 4.5, p_red = 0.10),
+  R16   = list(corners = 9.8, yellows = 4.7, p_red = 0.11),
+  QF    = list(corners = 10.1, yellows = 5.0, p_red = 0.13),
+  SF    = list(corners = 10.0, yellows = 5.2, p_red = 0.13),
+  `3RD` = list(corners = 9.8, yellows = 4.6, p_red = 0.09),
+  FINAL = list(corners = 10.3, yellows = 5.4, p_red = 0.14)
+)
+
+corners_baseline <- function(stage, gap) {
+  total <- wc_avg[[stage]]$corners
+  share <- pmin(0.8, pmax(0.2, 0.5 + 0.06 * gap))
+  c(home = total * share, away = total * (1 - share))
+}
+
+cards_baseline <- function(stage, gap) {
+  yel <- wc_avg[[stage]]$yellows
+  pr  <- wc_avg[[stage]]$p_red
+  w_share <- pmin(0.65, pmax(0.35, 0.5 + 0.04 * (-gap)))
+  home_yel <- if (gap > 0) yel * (1 - w_share) else yel * w_share
+  c(home_yel = home_yel, away_yel = yel - home_yel,
+    p_home_red = max(0, min(1, pr / 2 * (1 + 0.1 * (-gap)))),
+    p_away_red = max(0, min(1, pr / 2 * (1 + 0.1 * gap))))
+}
+
+shootout_rate <- c(Germany = 0.82, Argentina = 0.73, Brazil = 0.50,
+  France = 0.58, Spain = 0.50, England = 0.30, Portugal = 0.50,
+  Croatia = 0.75, Netherlands = 0.40, Belgium = 0.50, Mexico = 0.43,
+  Morocco = 0.75, Senegal = 0.67, Uruguay = 0.55, `USA` = 0.60)
+
+shootout_prob <- function(home, away) {
+  h <- if (!is.na(shootout_rate[home])) shootout_rate[home] else 0.5
+  a <- if (!is.na(shootout_rate[away])) shootout_rate[away] else 0.5
+  unname(h / (h + a))
+}
+```
+
+# 6. Single-match simulator
+
+```{r sim-match}
+simulate_match <- function(home, away, stage = "GROUP", neutral = TRUE,
+                           knockout = FALSE) {
+  m <- score_matrix(home, away, neutral = neutral); if (is.null(m)) return(NULL)
+  flat <- as.vector(m); flat <- flat / sum(flat)
+  k <- sample.int(length(flat), 1, prob = flat)
+  max_g <- nrow(m) - 1
+  h <- (k - 1) %/% (max_g + 1); a <- (k - 1) %% (max_g + 1)
+
+  gap <- (attack[idx[home]] - attack[idx[away]]) +
+         (defense[idx[away]] - defense[idx[home]])
+  cb <- corners_baseline(stage, gap); cd <- cards_baseline(stage, gap)
+
+  out <- list(
+    home_score = h, away_score = a,
+    home_corners = rpois(1, cb["home"]), away_corners = rpois(1, cb["away"]),
+    home_yellows = rpois(1, cd["home_yel"]),
+    away_yellows = rpois(1, cd["away_yel"]),
+    home_red = as.integer(runif(1) < cd["p_home_red"]),
+    away_red = as.integer(runif(1) < cd["p_away_red"]),
+    went_to_pens = FALSE, home_advances = NA
+  )
+  if (knockout) {
+    if (h == a) {
+      out$went_to_pens <- TRUE
+      out$home_advances <- runif(1) < shootout_prob(home, away)
+    } else {
+      out$home_advances <- h > a
+    }
+  }
+  out
+}
+```
+
+# 7. Monte Carlo the group stage
+
+```{r mc-groups}
+groups <- dbGetQuery(con, "SELECT group_id, team FROM wc2026_groups
+                            ORDER BY group_id, team")
+fixtures_grp <- dbGetQuery(con,
+  "SELECT fixture_id, group_id, home_team, away_team
+   FROM wc2026_fixtures WHERE stage = 'GROUP'")
+
+N_SIM <- 10000
+set.seed(2026)
+
+simulate_group_stage <- function() {
+  res <- fixtures_grp |>
+    mutate(sim = pmap(list(home_team, away_team),
+                      ~ simulate_match(..1, ..2, "GROUP")))
+  res$h <- sapply(res$sim, `[[`, "home_score")
+  res$a <- sapply(res$sim, `[[`, "away_score")
+  res
+}
+
+standings_from <- function(rows) {
+  long <- bind_rows(
+    rows |> transmute(group_id, team = home_team, gf = h, ga = a),
+    rows |> transmute(group_id, team = away_team, gf = a, ga = h)
+  ) |>
+    mutate(pts = if_else(gf > ga, 3L, if_else(gf == ga, 1L, 0L)))
+
+  long |>
+    group_by(group_id, team) |>
+    summarise(pts = sum(pts), gd = sum(gf - ga), gf = sum(gf),
+              .groups = "drop") |>
+    group_by(group_id) |>
+    arrange(desc(pts), desc(gd), desc(gf)) |>
+    mutate(rank = row_number()) |>
+    ungroup()
+}
+
+# Run once for illustration; the full 10k loop runs in the simulation chunk
+one_run <- simulate_group_stage()
+standings_from(one_run) |> filter(group_id == "L")
+```
+
+# 8. Knockout bracket simulation
+
+For the 2026 format the top 2 of each group (24 teams) plus the 8 best
+third-placed teams (32 total) enter the Round of 32. Below is a simplified
+seeding: top seeds drawn against best 3rds, runners-up drawn against each
+other. A production version would encode FIFA's official bracket map.
+
+```{r knockout}
+knockout_run <- function(advancers) {
+  # advancers: tibble with team, seed (1=group winner, 2=runner-up, 3=best-3rd)
+  bracket <- advancers |> arrange(seed, group_id)
+  rounds <- list(R32 = bracket)
+  for (stg in c("R32", "R16", "QF", "SF", "FINAL")) {
+    teams_in <- rounds[[stg]]$team
+    pairs <- matrix(teams_in, ncol = 2, byrow = TRUE)
+    winners <- apply(pairs, 1, function(p) {
+      r <- simulate_match(p[1], p[2], stg, knockout = TRUE)
+      if (r$home_advances) p[1] else p[2]
+    })
+    next_stg <- switch(stg, R32 = "R16", R16 = "QF",
+                       QF = "SF", SF = "FINAL", FINAL = NULL)
+    if (!is.null(next_stg)) rounds[[next_stg]] <- tibble(team = winners)
+  }
+  rounds
+}
+```
+
+# 9. Run the full Monte Carlo (10 000 tournaments)
+
+Run this chunk with `eval = TRUE` when you are ready to commit ~5 minutes
+of CPU. The cached results live in `tournament_sim`.
+
+```{r mc-full, eval=FALSE}
+champion_count <- integer()
+for (i in seq_len(N_SIM)) {
+  one <- simulate_group_stage()
+  st <- standings_from(one)
+  top2 <- st |> filter(rank <= 2)
+  thirds <- st |> filter(rank == 3) |> arrange(desc(pts), desc(gd)) |>
+    head(8)
+  advancers <- bind_rows(
+    top2 |> mutate(seed = rank),
+    thirds |> mutate(seed = 3)
+  )
+  rounds <- knockout_run(advancers)
+  champ <- rounds$FINAL$team[1]
+  champion_count[champ] <- (champion_count[champ] %||% 0L) + 1L
+}
+tibble(team = names(champion_count),
+       p_champion = champion_count / N_SIM) |>
+  arrange(desc(p_champion)) |> head(15)
+```
+
+# 10. Write predictions back to the database
+
+```{r write-preds, eval=FALSE}
+preds <- fixtures_grp |>
+  mutate(sim = pmap(list(home_team, away_team),
+                    ~ {
+                      m <- score_matrix(..1, ..2)
+                      i <- which(m == max(m), arr.ind = TRUE)[1, ]
+                      list(mh = i[1] - 1, ma = i[2] - 1,
+                           pw_h = sum(m[lower.tri(m)]),
+                           pw_d = sum(diag(m)),
+                           pw_a = sum(m[upper.tri(m)]))
+                    }))
+# ... build into the predictions table with source = 'r'
+# dbWriteTable(con, "predictions", out_df, append = TRUE)
+```
+
+# 11. Close
+
+```{r close}
+dbDisconnect(con)
+```

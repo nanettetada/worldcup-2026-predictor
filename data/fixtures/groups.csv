@@ -1,0 +1,49 @@
+group,team,pot,confederation,host
+A,Mexico,1,CONCACAF,1
+A,South Africa,3,CAF,0
+A,Korea Republic,2,AFC,0
+A,Czechia,4,UEFA,0
+B,Canada,1,CONCACAF,1
+B,Switzerland,2,UEFA,0
+B,Qatar,3,AFC,0
+B,Bosnia and Herzegovina,4,UEFA,0
+C,Brazil,1,CONMEBOL,0
+C,Morocco,2,CAF,0
+C,Haiti,3,CONCACAF,0
+C,Scotland,4,UEFA,0
+D,United States,1,CONCACAF,1
+D,Paraguay,2,CONMEBOL,0
+D,Australia,3,AFC,0
+D,Turkiye,4,UEFA,0
+E,Germany,1,UEFA,0
+E,Curacao,3,CONCACAF,0
+E,Cote d'Ivoire,2,CAF,0
+E,Ecuador,4,CONMEBOL,0
+F,Netherlands,1,UEFA,0
+F,Japan,2,AFC,0
+F,Tunisia,3,CAF,0
+F,Sweden,4,UEFA,0
+G,Belgium,1,UEFA,0
+G,Egypt,2,CAF,0
+G,Iran,3,AFC,0
+G,New Zealand,4,OFC,0
+H,Spain,1,UEFA,0
+H,Cabo Verde,3,CAF,0
+H,Saudi Arabia,2,AFC,0
+H,Uruguay,4,CONMEBOL,0
+I,France,1,UEFA,0
+I,Senegal,2,CAF,0
+I,Norway,3,UEFA,0
+I,Iraq,4,AFC,0
+J,Argentina,1,CONMEBOL,0
+J,Algeria,2,CAF,0
+J,Austria,3,UEFA,0
+J,Jordan,4,AFC,0
+K,Portugal,1,UEFA,0
+K,Uzbekistan,2,AFC,0
+K,Colombia,3,CONMEBOL,0
+K,Congo DR,4,CAF,0
+L,England,1,UEFA,0
+L,Croatia,2,UEFA,0
+L,Ghana,3,CAF,0
+L,Panama,4,CONCACAF,0
