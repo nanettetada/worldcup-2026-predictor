@@ -138,7 +138,7 @@ with tab_summary:
 # ---------------------------------------------------------------------------
 
 with tab_groups:
-    st.subheader("Group-stage predictions (modal score)")
+    st.subheader("Group-stage predictions")
     groups = data["groups"]
     fixtures = data["fixtures"]
     preds = data["preds"]
@@ -153,17 +153,64 @@ with tab_groups:
 
     grp_fx = fixtures.merge(
         preds, on="fixture_id", how="left", suffixes=("", "_p"))
-    grp_fx = grp_fx[grp_fx["group_id"] == group_id][
-        ["home_team", "away_team", "modal_home_score", "modal_away_score",
-         "p_home_win", "p_draw", "p_away_win",
-         "exp_home_corners", "exp_away_corners",
-         "exp_home_yellows", "exp_away_yellows"]]
+    grp_fx = grp_fx[grp_fx["group_id"] == group_id]
+
+    # ---- 1. Score and outcome --------------------------------------
+    st.markdown("**Score and outcome**")
+    score_df = grp_fx[["home_team", "away_team",
+                       "modal_home_score", "modal_away_score",
+                       "p_home_win", "p_draw", "p_away_win"]].copy()
+    score_df["score"] = (score_df["modal_home_score"].astype(int).astype(str)
+                         + " – "
+                         + score_df["modal_away_score"].astype(int).astype(str))
     for c in ["p_home_win", "p_draw", "p_away_win"]:
-        grp_fx[c] = (grp_fx[c] * 100).round(1)
-    for c in ["exp_home_corners", "exp_away_corners",
-              "exp_home_yellows", "exp_away_yellows"]:
-        grp_fx[c] = grp_fx[c].round(1)
-    st.dataframe(grp_fx, hide_index=True, width=1200)
+        score_df[c] = (score_df[c] * 100).round(1)
+    st.dataframe(
+        score_df[["home_team", "away_team", "score",
+                  "p_home_win", "p_draw", "p_away_win"]]
+        .rename(columns={"home_team": "Home", "away_team": "Away",
+                         "score": "Modal score",
+                         "p_home_win": "P(home win) %",
+                         "p_draw": "P(draw) %",
+                         "p_away_win": "P(away win) %"}),
+        hide_index=True, width=1100,
+    )
+
+    # ---- 2. Corners ------------------------------------------------
+    st.markdown("**Corners (expected count)**")
+    corners_df = grp_fx[["home_team", "away_team",
+                         "exp_home_corners", "exp_away_corners"]].copy()
+    corners_df["total"] = (corners_df["exp_home_corners"]
+                           + corners_df["exp_away_corners"])
+    for c in ["exp_home_corners", "exp_away_corners", "total"]:
+        corners_df[c] = corners_df[c].round(1)
+    st.dataframe(
+        corners_df.rename(columns={
+            "home_team": "Home", "away_team": "Away",
+            "exp_home_corners": "Home corners",
+            "exp_away_corners": "Away corners",
+            "total": "Match total"}),
+        hide_index=True, width=900,
+    )
+
+    # ---- 3. Cards --------------------------------------------------
+    st.markdown("**Cards (expected yellows, red-card probability)**")
+    cards_df = grp_fx[["home_team", "away_team",
+                       "exp_home_yellows", "exp_away_yellows",
+                       "p_home_red", "p_away_red"]].copy()
+    for c in ["exp_home_yellows", "exp_away_yellows"]:
+        cards_df[c] = cards_df[c].round(1)
+    for c in ["p_home_red", "p_away_red"]:
+        cards_df[c] = (cards_df[c] * 100).round(1)
+    st.dataframe(
+        cards_df.rename(columns={
+            "home_team": "Home", "away_team": "Away",
+            "exp_home_yellows": "Home yellows",
+            "exp_away_yellows": "Away yellows",
+            "p_home_red": "P(home red) %",
+            "p_away_red": "P(away red) %"}),
+        hide_index=True, width=1100,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -208,8 +255,15 @@ with tab_match:
     cols[0].metric("P(draw)", f"{row['p_draw']*100:.1f}%")
     cols[1].metric("Corners (home / away)",
                    f"{row['exp_home_corners']:.1f} / {row['exp_away_corners']:.1f}")
-    cols[2].metric("Yellows (home / away)",
-                   f"{row['exp_home_yellows']:.1f} / {row['exp_away_yellows']:.1f}")
+    cols[2].metric("Match total corners",
+                   f"{row['exp_home_corners'] + row['exp_away_corners']:.1f}")
+
+    st.markdown("**Cards**")
+    cols = st.columns(4)
+    cols[0].metric("Yellows — home", f"{row['exp_home_yellows']:.1f}")
+    cols[1].metric("Yellows — away", f"{row['exp_away_yellows']:.1f}")
+    cols[2].metric("P(red — home)", f"{row['p_home_red']*100:.1f}%")
+    cols[3].metric("P(red — away)", f"{row['p_away_red']*100:.1f}%")
 
     if row["stage"] != "GROUP" and pd.notna(row.get("p_penalties")):
         st.info(
