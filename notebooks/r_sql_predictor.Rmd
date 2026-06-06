@@ -49,7 +49,17 @@ library(MASS)
 # 1. Connect to the database
 
 ```{r connect}
-db_path <- file.path("..", "data", "wc2026.sqlite")
+# Find the DB whether the notebook is run from notebooks/, the project root,
+# or via rmarkdown::render() from anywhere else.
+find_db <- function() {
+  candidates <- c(
+    file.path("..", "data", "wc2026.sqlite"),
+    file.path("data", "wc2026.sqlite")
+  )
+  for (p in candidates) if (file.exists(p)) return(normalizePath(p))
+  stop("Could not find wc2026.sqlite - run python src/build_db.py first")
+}
+db_path <- find_db()
 con <- dbConnect(SQLite(), db_path)
 dbListTables(con)
 ```
@@ -104,10 +114,14 @@ strength |> arrange(desc(strength)) |> head(15)
 # 3. Fit Dixon-Coles
 
 ```{r dc-data}
+# Pull the last 6 years of matches. The Python notebook uses 2014+ but R's
+# optim() is materially slower than scipy.optimize.minimize on the same
+# problem - shorter horizon keeps the knit time tolerable while still
+# covering two full World Cup cycles.
 hist <- dbGetQuery(con, "
   SELECT match_date, home_team, away_team, home_score, away_score, neutral
   FROM historical_matches
-  WHERE match_date >= '2014-01-01'                -- last ~12 years
+  WHERE match_date >= '2020-01-01'
     AND home_score IS NOT NULL
     AND away_score IS NOT NULL;
 ") |>
