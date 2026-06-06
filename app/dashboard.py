@@ -39,6 +39,14 @@ def load_data(source: str) -> dict:
         groups = pd.read_sql("SELECT * FROM wc2026_groups", conn)
         fixtures = pd.read_sql("SELECT * FROM wc2026_fixtures", conn)
         try:
+            matchups = pd.read_sql("SELECT * FROM fixture_matchups", conn)
+        except Exception:
+            matchups = pd.DataFrame()
+        try:
+            pos = pd.read_sql("SELECT * FROM team_position_strength", conn)
+        except Exception:
+            pos = pd.DataFrame()
+        try:
             preds = pd.read_sql(
                 "SELECT * FROM predictions WHERE source = ?",
                 conn, params=(source,))
@@ -60,7 +68,7 @@ def load_data(source: str) -> dict:
     finally:
         conn.close()
     return dict(groups=groups, fixtures=fixtures, preds=preds,
-                tsim=tsim, squad=squad)
+                tsim=tsim, squad=squad, matchups=matchups, pos=pos)
 
 
 # ---------------------------------------------------------------------------
@@ -93,9 +101,10 @@ if data.get("preds", pd.DataFrame()).empty:
         f"Run the matching notebook first.")
     st.stop()
 
-tab_summary, tab_groups, tab_bracket, tab_match, tab_method = st.tabs([
+(tab_summary, tab_groups, tab_bracket,
+ tab_match, tab_squad, tab_method) = st.tabs([
     "Tournament", "Group Stage", "Knockout Bracket",
-    "Match Detail", "Methodology",
+    "Match Detail", "Squad Matchup", "Methodology",
 ])
 
 
@@ -271,10 +280,69 @@ with tab_match:
             f"{row['p_penalties']*100:.1f}%, "
             f"P(home advances) = {row['p_home_advances']*100:.1f}%")
 
+    matchups = data.get("matchups", pd.DataFrame())
+    if not matchups.empty and row["fixture_id"] in matchups["fixture_id"].values:
+        mu = matchups[matchups["fixture_id"] == row["fixture_id"]].iloc[0]
+        st.markdown("**Position-level matchup (EA FC 26 top-5 per position)**")
+        cols = st.columns(4)
+        cols[0].metric("Home attack vs away defense",
+                       f"{mu['attack_edge_home']:+.1f}")
+        cols[1].metric("Away attack vs home defense",
+                       f"{mu['attack_edge_away']:+.1f}")
+        cols[2].metric("Midfield balance (home – away)",
+                       f"{mu['midfield_balance']:+.1f}")
+        cols[3].metric("GK advantage (home – away)",
+                       f"{mu['gk_advantage_home']:+.1f}")
+        st.caption(
+            f"Composite matchup score (home): **{mu['matchup_score_home']:+.1f}**. "
+            "Positive numbers favour the home side. This signal feeds the "
+            "goal model — see Methodology.")
+
 
 # ---------------------------------------------------------------------------
 # Methodology tab
 # ---------------------------------------------------------------------------
+
+with tab_squad:
+    st.subheader("Squad strength by position")
+    pos = data.get("pos", pd.DataFrame())
+    matchups = data.get("matchups", pd.DataFrame())
+    fixtures = data["fixtures"]
+
+    if pos.empty:
+        st.info("Position-strength table not built yet. "
+                "Run `python src/build_db.py` to populate.")
+    else:
+        wide = pos.pivot(index="team", columns="position_group",
+                         values="top5_overall").reset_index()
+        wide["Composite"] = (wide[["GK", "DEF", "MID", "FWD"]].mean(axis=1)
+                             .round(2))
+        wide = wide.sort_values("Composite", ascending=False)
+        for c in ["GK", "DEF", "MID", "FWD"]:
+            if c in wide.columns:
+                wide[c] = wide[c].round(1)
+        st.dataframe(
+            wide.rename(columns={"team": "Team"}).head(48),
+            hide_index=True, width=900,
+        )
+
+        st.subheader("Biggest matchup edges (group stage)")
+        if not matchups.empty:
+            fx = fixtures[fixtures["stage"] == "GROUP"][
+                ["fixture_id", "home_team", "away_team", "group_id"]]
+            edge = fx.merge(matchups, on="fixture_id", how="left")
+            edge["abs_score"] = edge["matchup_score_home"].abs()
+            top = edge.nlargest(10, "abs_score")[
+                ["group_id", "home_team", "away_team",
+                 "attack_edge_home", "attack_edge_away",
+                 "midfield_balance", "gk_advantage_home",
+                 "matchup_score_home"]]
+            for c in ["attack_edge_home", "attack_edge_away",
+                      "midfield_balance", "gk_advantage_home",
+                      "matchup_score_home"]:
+                top[c] = top[c].round(1)
+            st.dataframe(top, hide_index=True, width=1100)
+
 
 with tab_method:
     st.markdown("""

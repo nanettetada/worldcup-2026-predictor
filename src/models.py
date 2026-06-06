@@ -138,8 +138,15 @@ class DixonColesModel:
     # ---- prediction ---------------------------------------------------
 
     def score_matrix(self, home: str, away: str, neutral: bool = True,
-                     max_goals: int = 8) -> np.ndarray:
+                     max_goals: int = 8,
+                     matchup_adjust: float = 0.0) -> np.ndarray:
+        """matchup_adjust: position-level edge for the home side, on the
+        same log-lambda scale as Dixon-Coles attack/defense (a value of
+        ~0.1 corresponds to ~10% expected-goals shift toward home)."""
         lam, mu = self._lambdas(home, away, neutral=neutral)
+        if matchup_adjust:
+            lam *= np.exp(matchup_adjust)
+            mu *= np.exp(-matchup_adjust)
         m = np.outer(poisson.pmf(np.arange(max_goals + 1), lam),
                      poisson.pmf(np.arange(max_goals + 1), mu))
         for h in range(2):
@@ -147,17 +154,20 @@ class DixonColesModel:
                 m[h, a] *= _dc_correction(h, a, lam, mu, self.rho)
         return m / m.sum()
 
-    def outcome_probs(self, home: str, away: str, neutral: bool = True
+    def outcome_probs(self, home: str, away: str, neutral: bool = True,
+                      matchup_adjust: float = 0.0
                       ) -> tuple[float, float, float]:
-        m = self.score_matrix(home, away, neutral=neutral)
+        m = self.score_matrix(home, away, neutral=neutral,
+                              matchup_adjust=matchup_adjust)
         p_home = float(np.tril(m, -1).sum())
         p_draw = float(np.trace(m))
         p_away = float(np.triu(m, 1).sum())
         return p_home, p_draw, p_away
 
-    def modal_score(self, home: str, away: str, neutral: bool = True
-                    ) -> tuple[int, int]:
-        m = self.score_matrix(home, away, neutral=neutral)
+    def modal_score(self, home: str, away: str, neutral: bool = True,
+                    matchup_adjust: float = 0.0) -> tuple[int, int]:
+        m = self.score_matrix(home, away, neutral=neutral,
+                              matchup_adjust=matchup_adjust)
         h, a = np.unravel_index(np.argmax(m), m.shape)
         return int(h), int(a)
 
@@ -246,11 +256,13 @@ def shootout_winner_prob(home: str, away: str) -> float:
 def simulate_match(model: DixonColesModel, home: str, away: str,
                    stage: str = "GROUP", neutral: bool = True,
                    rng: np.random.Generator | None = None,
-                   knockout: bool = False) -> dict:
+                   knockout: bool = False,
+                   matchup_adjust: float = 0.0) -> dict:
     """Draw one realization of a match. For knockout matches, also resolve
     extra time + penalty shootout if needed."""
     rng = rng or np.random.default_rng()
-    m = model.score_matrix(home, away, neutral=neutral)
+    m = model.score_matrix(home, away, neutral=neutral,
+                           matchup_adjust=matchup_adjust)
     flat = m.flatten()
     flat = flat / flat.sum()
     idx = rng.choice(len(flat), p=flat)
@@ -273,7 +285,8 @@ def simulate_match(model: DixonColesModel, home: str, away: str,
     if knockout and h == a:
         # Extra time: draw a small additional goal increment (~1/3 of a full
         # match worth) from the same score matrix. If still level, penalties.
-        et_score = model.score_matrix(home, away, neutral=neutral)
+        et_score = model.score_matrix(home, away, neutral=neutral,
+                                      matchup_adjust=matchup_adjust)
         et_flat = et_score.flatten() / et_score.flatten().sum()
         ei = rng.choice(len(et_flat), p=et_flat)
         eh, ea = divmod(ei, max_g + 1)
@@ -310,3 +323,15 @@ def squad_strength_gap(squad: pd.DataFrame, home: str, away: str) -> float:
         return 0.0
     # scale so that a 5-point overall gap maps to ~1.0 on the strength axis
     return float((h.iloc[0] - a.iloc[0]) / 5.0)
+
+
+# Calibration constant for the position-matchup adjustment. The composite
+# matchup_score_home spans roughly [-55, +55] on the EA overall scale; we
+# map a 25-point swing to ~25% expected-goals shift on the log scale.
+MATCHUP_SCALE = 0.01
+
+
+def matchup_to_adjust(matchup_score_home: float | None) -> float:
+    if matchup_score_home is None or pd.isna(matchup_score_home):
+        return 0.0
+    return float(matchup_score_home) * MATCHUP_SCALE

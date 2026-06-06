@@ -18,7 +18,8 @@ import numpy as np
 import pandas as pd
 
 from src.models import (DixonColesModel, corners_baseline, cards_baseline,
-                        shootout_winner_prob, simulate_match)
+                        shootout_winner_prob, simulate_match,
+                        matchup_to_adjust)
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "data" / "wc2026.sqlite"
@@ -62,10 +63,15 @@ def main(n_sim: int = 10_000) -> None:
           f"home_adv={model.home_adv:.3f}, rho={model.rho:.3f} "
           f"({time.time() - t0:.1f}s)")
 
-    fx_grp = pd.read_sql(
-        "SELECT fixture_id, group_id, home_team, away_team "
-        "FROM wc2026_fixtures WHERE stage = 'GROUP'", conn)
-    print(f"[3] {len(fx_grp)} group-stage fixtures")
+    fx_grp = pd.read_sql("""
+        SELECT f.fixture_id, f.group_id, f.home_team, f.away_team,
+               m.matchup_score_home
+        FROM wc2026_fixtures f
+        LEFT JOIN fixture_matchups m ON m.fixture_id = f.fixture_id
+        WHERE f.stage = 'GROUP'
+    """, conn)
+    print(f"[3] {len(fx_grp)} group-stage fixtures "
+          f"({fx_grp['matchup_score_home'].notna().sum()} with position matchup)")
 
     # Filter to teams the model knows
     unknown = set(fx_grp["home_team"]).union(fx_grp["away_team"]) - set(model.teams)
@@ -81,8 +87,10 @@ def main(n_sim: int = 10_000) -> None:
         # Group stage
         rows = []
         for _, fx in fx_grp.iterrows():
+            adj = matchup_to_adjust(fx["matchup_score_home"])
             r = simulate_match(model, fx["home_team"], fx["away_team"],
-                               stage="GROUP", neutral=True, rng=rng)
+                               stage="GROUP", neutral=True, rng=rng,
+                               matchup_adjust=adj)
             rows.append({"group_id": fx["group_id"],
                          "home_team": fx["home_team"],
                          "away_team": fx["away_team"],
@@ -116,10 +124,13 @@ def main(n_sim: int = 10_000) -> None:
     pred_rows = []
     for _, fx in fx_grp.iterrows():
         h, a = fx["home_team"], fx["away_team"]
-        mh, ma = model.modal_score(h, a)
-        pwh, pwd, pwa = model.outcome_probs(h, a)
-        sg = (model.attack.get(h, 0) - model.attack.get(a, 0)
-              + model.defense.get(a, 0) - model.defense.get(h, 0))
+        adj = matchup_to_adjust(fx["matchup_score_home"])
+        mh, ma = model.modal_score(h, a, matchup_adjust=adj)
+        pwh, pwd, pwa = model.outcome_probs(h, a, matchup_adjust=adj)
+        # Pass the position matchup to the corners/cards baseline too
+        sg = ((model.attack.get(h, 0) - model.attack.get(a, 0)
+               + model.defense.get(a, 0) - model.defense.get(h, 0))
+              + adj * 2.0)
         ch, ca = corners_baseline("GROUP", sg)
         yh, ya, prh, pra = cards_baseline("GROUP", sg)
         pred_rows.append({

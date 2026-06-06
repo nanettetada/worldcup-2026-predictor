@@ -90,6 +90,29 @@ CREATE TABLE IF NOT EXISTS team_squad_strength (
     n_players_top23      INTEGER
 );
 
+-- Position-level strength so per-fixture matchups (home FWD vs away DEF,
+-- midfield mass vs midfield mass, GK quality) can drive the prediction.
+CREATE TABLE IF NOT EXISTS team_position_strength (
+    team                 TEXT NOT NULL,
+    position_group       TEXT NOT NULL,        -- 'GK','DEF','MID','FWD'
+    avg_overall          REAL,                 -- mean rating across the bench
+    top5_overall         REAL,                 -- mean of top-N (5 for outfield, 2 for GK)
+    n_players            INTEGER,
+    PRIMARY KEY (team, position_group)
+);
+
+-- Per-fixture matchup score (computed from team_position_strength); cached
+-- so the dashboard and both notebooks read the same number.
+CREATE TABLE IF NOT EXISTS fixture_matchups (
+    fixture_id              INTEGER PRIMARY KEY,
+    attack_edge_home        REAL,    -- home FWD top5 - away DEF top5
+    attack_edge_away        REAL,    -- away FWD top5 - home DEF top5
+    midfield_balance        REAL,    -- home MID top5 - away MID top5
+    gk_advantage_home       REAL,    -- home GK top2 - away GK top2
+    matchup_score_home      REAL,    -- composite, > 0 favours home
+    FOREIGN KEY (fixture_id) REFERENCES wc2026_fixtures(fixture_id)
+);
+
 -- 2026 World Cup setup
 CREATE TABLE IF NOT EXISTS wc2026_groups (
     group_id        TEXT NOT NULL,             -- 'A' .. 'L'

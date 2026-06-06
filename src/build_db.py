@@ -245,6 +245,97 @@ def load_player_ratings(conn: sqlite3.Connection) -> int:
     return len(df)
 
 
+POSITION_GROUPS = {
+    "GK":  {"GK"},
+    "DEF": {"CB", "LB", "RB", "LWB", "RWB", "SW"},
+    "MID": {"CM", "CDM", "CAM", "LM", "RM", "DM"},
+    "FWD": {"ST", "CF", "LW", "RW", "LF", "RF"},
+}
+
+
+def _classify_position(pos: str | None) -> str | None:
+    if not pos or not isinstance(pos, str):
+        return None
+    # player_positions can be comma-separated, e.g. "ST,LW" - take the first
+    primary = pos.split(",")[0].strip().upper()
+    for group, members in POSITION_GROUPS.items():
+        if primary in members:
+            return group
+    return None
+
+
+def build_position_strength(conn: sqlite3.Connection) -> int:
+    """Aggregate player ratings to (team, position_group). 'top5' uses top-2
+    for goalkeepers and top-5 for outfield groups."""
+    cur = conn.execute("SELECT COUNT(*) FROM player_ratings")
+    if cur.fetchone()[0] == 0:
+        return 0
+
+    df = pd.read_sql(
+        "SELECT nationality, position, overall_rating FROM player_ratings "
+        "WHERE nationality IS NOT NULL AND overall_rating IS NOT NULL",
+        conn)
+    df["position_group"] = df["position"].map(_classify_position)
+    df = df.dropna(subset=["position_group"])
+
+    rows = []
+    for (team, pos), sub in df.groupby(["nationality", "position_group"]):
+        ranked = sub.sort_values("overall_rating", ascending=False)
+        top_n = 2 if pos == "GK" else 5
+        rows.append({
+            "team": team,
+            "position_group": pos,
+            "avg_overall": float(ranked["overall_rating"].mean()),
+            "top5_overall": float(ranked["overall_rating"]
+                                  .head(top_n).mean()),
+            "n_players": int(len(ranked)),
+        })
+    out = pd.DataFrame(rows)
+    conn.execute("DELETE FROM team_position_strength")
+    out.to_sql("team_position_strength", conn,
+               if_exists="append", index=False)
+    return len(out)
+
+
+def build_fixture_matchups(conn: sqlite3.Connection) -> int:
+    """For each WC2026 fixture, compute the position-level matchup score.
+    matchup_score_home > 0 means the home side is favoured on talent."""
+    fx = pd.read_sql(
+        "SELECT fixture_id, home_team, away_team FROM wc2026_fixtures "
+        "WHERE home_team IS NOT NULL AND away_team IS NOT NULL", conn)
+    pos = pd.read_sql(
+        "SELECT team, position_group, top5_overall "
+        "FROM team_position_strength", conn).pivot(
+            index="team", columns="position_group", values="top5_overall")
+
+    def get(team: str, group: str) -> float:
+        if team not in pos.index or group not in pos.columns:
+            return 70.0  # neutral fallback
+        v = pos.loc[team, group]
+        return float(v) if pd.notna(v) else 70.0
+
+    rows = []
+    for _, r in fx.iterrows():
+        h, a = r["home_team"], r["away_team"]
+        attack_h = get(h, "FWD") - get(a, "DEF")
+        attack_a = get(a, "FWD") - get(h, "DEF")
+        midfield = get(h, "MID") - get(a, "MID")
+        gk = get(h, "GK") - get(a, "GK")
+        composite = (attack_h - attack_a) + 0.5 * midfield + 0.3 * gk
+        rows.append({
+            "fixture_id": int(r["fixture_id"]),
+            "attack_edge_home": attack_h,
+            "attack_edge_away": attack_a,
+            "midfield_balance": midfield,
+            "gk_advantage_home": gk,
+            "matchup_score_home": composite,
+        })
+    out = pd.DataFrame(rows)
+    conn.execute("DELETE FROM fixture_matchups")
+    out.to_sql("fixture_matchups", conn, if_exists="append", index=False)
+    return len(out)
+
+
 def build_squad_strength(conn: sqlite3.Connection) -> int:
     """Aggregate top-23 players per nation into a single squad-strength row."""
     cur = conn.execute("SELECT COUNT(*) FROM player_ratings")
@@ -388,9 +479,11 @@ def main() -> None:
         n_rank = load_fifa_rankings(conn)
         n_play = load_player_ratings(conn)
         n_squad = build_squad_strength(conn)
+        n_pos = build_position_strength(conn)
         n_grp = load_groups(conn)
         n_gfx = build_group_fixtures(conn)
         n_kfx = build_knockout_skeleton(conn)
+        n_mat = build_fixture_matchups(conn)
         conn.commit()
     finally:
         conn.close()
@@ -401,9 +494,11 @@ def main() -> None:
     print(f"  fifa_rankings       : {n_rank:>7,}")
     print(f"  player_ratings      : {n_play:>7,}")
     print(f"  team_squad_strength : {n_squad:>7,}")
+    print(f"  team_position_strength: {n_pos:>5,}")
     print(f"  wc2026_groups       : {n_grp:>7,}  (48 teams expected)")
     print(f"  group fixtures      : {n_gfx:>7,}  (72 expected)")
     print(f"  knockout skeleton   : {n_kfx:>7,}  (32 expected)")
+    print(f"  fixture_matchups    : {n_mat:>7,}  (104 expected)")
     print(f"  built at           : {datetime.now().isoformat(timespec='seconds')}")
 
 
