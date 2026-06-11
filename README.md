@@ -28,18 +28,28 @@ A realistic ceiling for exact-score accuracy is ~12–15%. The predictions are e
 
 ## Headline result (10 000-simulation championship odds)
 
+Predictions after layering the EA Sports FC 26 position-level squad matchup
+on top of the Dixon – Coles fit.
+
 | # | Team | Champion | Reaches Final | Reaches SF |
 | --- | --- | ---: | ---: | ---: |
-| 1 | Argentina | 25.1 % | 33.8 % | 46.7 % |
-| 2 | Japan | 9.6 % | 16.0 % | 27.6 % |
-| 3 | Spain | 9.1 % | 16.2 % | 28.8 % |
-| 4 | Brazil | 8.9 % | 15.0 % | 28.9 % |
-| 5 | Morocco | 8.5 % | 14.4 % | 26.3 % |
-| 6 | Colombia | 6.8 % | 13.7 % | 23.2 % |
-| 7 | Ecuador | 5.3 % | 11.0 % | 19.7 % |
-| 8 | Uruguay | 3.7 % | 9.0 % | 17.2 % |
-| 9 | France | 3.4 % | 7.6 % | 14.2 % |
-| 10 | Senegal | 2.0 % | 6.0 % | 11.6 % |
+| 1 | Argentina | 24.3 % | 32.2 % | 44.9 % |
+| 2 | Japan | 9.6 % | 16.6 % | 28.1 % |
+| 3 | Brazil | 8.9 % | 14.9 % | 30.3 % |
+| 4 | Morocco | 8.9 % | 14.6 % | 26.8 % |
+| 5 | Spain | 8.8 % | 15.0 % | 28.5 % |
+| 6 | Colombia | 7.0 % | 13.7 % | 22.3 % |
+| 7 | Ecuador | 6.1 % | 12.8 % | 22.3 % |
+| 8 | Uruguay | 3.6 % | 9.2 % | 17.0 % |
+| 9 | France | 2.9 % | 6.5 % | 12.5 % |
+| 10 | Senegal | 2.3 % | 6.9 % | 14.4 % |
+
+![Dashboard — Tournament tab](docs/screenshots/dashboard-tournament.png)
+
+The R sibling notebook produces a parallel set of numbers from the same
+SQLite database — used for cross-language validation.
+
+![R + SQL workbook — rendered output](docs/screenshots/r-notebook.png)
 
 ## Repo layout
 
