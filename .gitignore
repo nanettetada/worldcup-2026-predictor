@@ -15,6 +15,9 @@ data/*.sqlite
 data/*.sqlite-journal
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+# Commit the built database so the Streamlit Cloud app has data without
+# re-downloading three Kaggle datasets at every cold start.
+!data/wc2026.sqlite
 models/*.pkl
 models/*.rds
 
