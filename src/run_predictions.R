@@ -76,10 +76,13 @@ if (nrow(hist) == 0) {
   cat(sprintf("    %d teams, fit took %.1fs\n",
               n, as.numeric(Sys.time() - t0, units = "secs")))
 
-  score_matrix <- function(home, away, max_goals = 8) {
+  # Same calibration constant as src/models.py::MATCHUP_SCALE.
+  matchup_scale <- 0.01
+
+  score_matrix <- function(home, away, matchup_adjust = 0, max_goals = 8) {
     if (!(home %in% teams) || !(away %in% teams)) return(NULL)
-    lam <- exp(attack[idx[home]] + defense[idx[away]])  # neutral venue
-    mu  <- exp(attack[idx[away]] + defense[idx[home]])
+    lam <- exp(attack[idx[home]] + defense[idx[away]]) * exp( matchup_adjust)
+    mu  <- exp(attack[idx[away]] + defense[idx[home]]) * exp(-matchup_adjust)
     m <- outer(dpois(0:max_goals, lam), dpois(0:max_goals, mu))
     for (h in 0:1) for (a in 0:1)
       m[h + 1, a + 1] <- m[h + 1, a + 1] * dc_corr(h, a, lam, mu, rho)
@@ -99,7 +102,9 @@ if (nrow(hist) == 0) {
   preds <- vector("list", nrow(fx))
   for (i in seq_len(nrow(fx))) {
     h <- fx$home_team[i]; a <- fx$away_team[i]
-    sm <- score_matrix(h, a); if (is.null(sm)) next
+    adj <- if (is.na(fx$matchup_score_home[i])) 0
+           else fx$matchup_score_home[i] * matchup_scale
+    sm <- score_matrix(h, a, matchup_adjust = adj); if (is.null(sm)) next
     mode_idx <- which(sm == max(sm), arr.ind = TRUE)[1, ]
     mh <- mode_idx[1] - 1; ma <- mode_idx[2] - 1
     p_h <- sum(sm[lower.tri(sm)])
@@ -107,7 +112,8 @@ if (nrow(hist) == 0) {
     p_a <- sum(sm[upper.tri(sm)])
 
     gap <- (attack[idx[h]] - attack[idx[a]]) +
-           (defense[idx[a]] - defense[idx[h]])
+           (defense[idx[a]] - defense[idx[h]]) +
+           adj * 2.0
     share <- min(0.8, max(0.2, 0.5 + 0.06 * gap))
     yel <- wc_avg$GROUP[["yellows"]]
     weaker <- min(0.65, max(0.35, 0.5 + 0.04 * (-gap)))
