@@ -1,5 +1,7 @@
 # World Cup 2026 Predictor
 
+**Live dashboard: https://tadananette2026worldcup.streamlit.app/**
+
 Statistical prediction system for the 2026 FIFA World Cup (USA / Canada / Mexico, 11 June – 19 July 2026). Built as two parallel notebooks — **Python + SQL** and **R + SQL** — sharing a single SQLite database so the same data and the same modelling decisions are visible in both ecosystems.
 
 ## What it predicts

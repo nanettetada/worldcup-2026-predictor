@@ -87,12 +87,34 @@ if not DB.exists():
              f"Run `python src/build_db.py` first.")
     st.stop()
 
+@st.cache_data(ttl=300)
+def available_sources() -> list[str]:
+    if not DB.exists():
+        return []
+    try:
+        conn = sqlite3.connect(DB)
+        rows = conn.execute(
+            "SELECT DISTINCT source FROM predictions").fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception:
+        return []
+
+
+sources = available_sources() or ["python"]
+
 with st.sidebar:
     st.header("Settings")
-    source = st.radio("Predictions source",
-                      ["python", "r"], horizontal=True)
+    source = st.radio("Predictions source", sources, horizontal=True,
+                      index=0 if "python" in sources else 0)
     st.write(f"Tournament: 11 Jun – 19 Jul 2026")
     st.write(f"Database: `{DB.name}`")
+    if len(sources) == 1:
+        other = "r" if sources[0] == "python" else "python"
+        st.caption(
+            f"Only `{sources[0]}` predictions are loaded. To populate "
+            f"`{other}`, run the matching notebook or "
+            f"`Rscript src/run_predictions.R`.")
 
 data = load_data(source)
 if data.get("preds", pd.DataFrame()).empty:
