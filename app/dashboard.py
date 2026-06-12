@@ -194,17 +194,26 @@ with tab_groups:
     score_df["score"] = (score_df["modal_home_score"].astype(int).astype(str)
                          + " – "
                          + score_df["modal_away_score"].astype(int).astype(str))
+
+    def _favourite(r):
+        best = max(r["p_home_win"], r["p_draw"], r["p_away_win"])
+        if r["p_draw"] == best:
+            return "Draw"
+        return r["home_team"] if r["p_home_win"] == best else r["away_team"]
+    score_df["favourite"] = score_df.apply(_favourite, axis=1)
+
     for c in ["p_home_win", "p_draw", "p_away_win"]:
         score_df[c] = (score_df[c] * 100).round(1)
     st.dataframe(
-        score_df[["home_team", "away_team", "score",
+        score_df[["home_team", "away_team", "score", "favourite",
                   "p_home_win", "p_draw", "p_away_win"]]
         .rename(columns={"home_team": "Home", "away_team": "Away",
                          "score": "Modal score",
+                         "favourite": "More likely to win",
                          "p_home_win": "P(home win) %",
                          "p_draw": "P(draw) %",
                          "p_away_win": "P(away win) %"}),
-        hide_index=True, width=1100,
+        hide_index=True, width=1200,
     )
 
     # ---- 2. Corners ------------------------------------------------
@@ -255,11 +264,22 @@ with tab_bracket:
     ko = fixtures[fixtures["stage"].isin(
         ["R32", "R16", "QF", "SF", "3RD", "FINAL"])]
     ko = ko.merge(preds, on="fixture_id", how="left")
+    if "p_home_advances" in ko.columns:
+        ko["favourite"] = ko.apply(
+            lambda r: (r["home_team"] if r["p_home_advances"] >= 0.5
+                       else r["away_team"])
+            if pd.notna(r.get("p_home_advances"))
+            and pd.notna(r.get("home_team"))
+            and pd.notna(r.get("away_team"))
+            else "—",
+            axis=1,
+        )
     cols = ["stage", "home_slot", "away_slot", "home_team", "away_team",
-            "modal_home_score", "modal_away_score",
+            "modal_home_score", "modal_away_score", "favourite",
             "p_home_advances", "p_penalties"]
-    show = ko[[c for c in cols if c in ko.columns]]
-    st.dataframe(show, hide_index=True, width=1200)
+    show = ko[[c for c in cols if c in ko.columns]].rename(
+        columns={"favourite": "More likely to win"})
+    st.dataframe(show, hide_index=True, width=1300)
 
 
 # ---------------------------------------------------------------------------
