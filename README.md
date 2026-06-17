@@ -110,6 +110,30 @@ credentials. Either:
 
 Corners and cards are not present in any of these sources. They are modelled from historical World Cup / Euro / Copa América per-match averages (publicly published), scaled by team-strength differential — a baseline, not a high-precision predictor.
 
+## Grading the model during the tournament
+
+The dashboard has a **Results & Accuracy** tab that grades predictions
+against actual results as matches finish. Refresh the results table with:
+
+```bash
+python src/fetch_results.py
+```
+
+The script pulls from [football-data.org](https://www.football-data.org/)
+(free tier; set `FOOTBALL_DATA_TOKEN` for a higher rate limit) and merges
+anything in `data/manual_results.json` so a missing or delayed feed
+doesn't block evaluation. Re-run any time — it's idempotent. Metrics
+reported:
+
+- **Outcome accuracy** — share of matches where the model's top pick
+  (home / draw / away) was the actual result
+- **Brier score** — averaged across the three outcomes; lower is better,
+  a flat 1/3 guess scores ~0.667
+- **Goals RMSE** — modal score vs actual, per side
+- **Calibration table** — predicted-probability bands vs realised hit rate
+
+Final report card lands after 19 July 2026.
+
 ## Status
 
 Active build, started May 2026 — predictions locked before the opening match in Mexico City on 11 June 2026.

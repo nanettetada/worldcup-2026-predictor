@@ -12,7 +12,7 @@ DST = ROOT / "data" / "wc2026.sqlite"  # in-place
 
 KEEP = {
     "wc2026_groups", "wc2026_fixtures",
-    "predictions", "tournament_sim",
+    "predictions", "tournament_sim", "actual_results",
     "team_squad_strength", "team_position_strength", "fixture_matchups",
     "model_params",
 }

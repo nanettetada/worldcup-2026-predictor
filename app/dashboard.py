@@ -65,10 +65,15 @@ def load_data(source: str) -> dict:
                 "ORDER BY squad_overall_top11 DESC", conn)
         except Exception:
             squad = pd.DataFrame()
+        try:
+            actuals = pd.read_sql("SELECT * FROM actual_results", conn)
+        except Exception:
+            actuals = pd.DataFrame()
     finally:
         conn.close()
     return dict(groups=groups, fixtures=fixtures, preds=preds,
-                tsim=tsim, squad=squad, matchups=matchups, pos=pos)
+                tsim=tsim, squad=squad, matchups=matchups, pos=pos,
+                actuals=actuals)
 
 
 # ---------------------------------------------------------------------------
@@ -124,9 +129,9 @@ if data.get("preds", pd.DataFrame()).empty:
     st.stop()
 
 (tab_summary, tab_groups, tab_bracket,
- tab_match, tab_squad, tab_method) = st.tabs([
+ tab_match, tab_squad, tab_results, tab_method) = st.tabs([
     "Tournament", "Group Stage", "Knockout Bracket",
-    "Match Detail", "Squad Matchup", "Methodology",
+    "Match Detail", "Squad Matchup", "Results & Accuracy", "Methodology",
 ])
 
 
@@ -384,6 +389,139 @@ with tab_squad:
                       "matchup_score_home"]:
                 top[c] = top[c].round(1)
             st.dataframe(top, hide_index=True, width=1100)
+
+
+# ---------------------------------------------------------------------------
+# Results & Accuracy tab
+# ---------------------------------------------------------------------------
+
+with tab_results:
+    st.subheader("How the model is doing once results come in")
+    st.caption(
+        "Populated from `actual_results` in the database. Refresh with "
+        "`python src/fetch_results.py` (pulls football-data.org and "
+        "anything in `data/manual_results.json`).")
+
+    actuals = data.get("actuals", pd.DataFrame())
+    fixtures = data["fixtures"]
+    preds = data["preds"]
+
+    if actuals.empty or actuals["outcome"].notna().sum() == 0:
+        st.info(
+            "No completed matches in the database yet. Once the tournament "
+            "is underway, run `python src/fetch_results.py` to load actual "
+            "scores and this tab will start grading the predictions.")
+    else:
+        merged = (actuals
+                  .merge(fixtures[["fixture_id", "stage", "group_id",
+                                   "home_team", "away_team"]],
+                         on="fixture_id", how="left")
+                  .merge(preds[["fixture_id", "modal_home_score",
+                                "modal_away_score",
+                                "p_home_win", "p_draw", "p_away_win"]],
+                         on="fixture_id", how="left"))
+        finished = merged[merged["outcome"].notna()].copy()
+
+        def predicted_outcome(r):
+            best = max(r["p_home_win"], r["p_draw"], r["p_away_win"])
+            if r["p_draw"] == best:
+                return "D"
+            return "H" if r["p_home_win"] == best else "A"
+
+        finished["pred_outcome"] = finished.apply(predicted_outcome, axis=1)
+        finished["pred_p_actual"] = finished.apply(
+            lambda r: (r["p_home_win"] if r["outcome"] == "H"
+                       else r["p_draw"] if r["outcome"] == "D"
+                       else r["p_away_win"]),
+            axis=1)
+        finished["correct"] = finished["pred_outcome"] == finished["outcome"]
+        finished["exact_score"] = (
+            (finished["modal_home_score"] == finished["home_score"])
+            & (finished["modal_away_score"] == finished["away_score"]))
+
+        # Top-line metrics
+        n = len(finished)
+        acc = finished["correct"].mean()
+        exact = finished["exact_score"].mean()
+        # Brier score: sum (p_i - y_i)^2 across three outcomes
+        b = ((finished["p_home_win"] - (finished["outcome"] == "H")) ** 2
+             + (finished["p_draw"] - (finished["outcome"] == "D")) ** 2
+             + (finished["p_away_win"] - (finished["outcome"] == "A")) ** 2)
+        brier = b.mean()
+        # Goal RMSE
+        from math import sqrt
+        goal_rmse = sqrt((
+            (finished["modal_home_score"] - finished["home_score"]) ** 2
+            + (finished["modal_away_score"] - finished["away_score"]) ** 2
+        ).mean())
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Matches graded", f"{n}")
+        c2.metric("Outcome accuracy", f"{acc*100:.1f}%",
+                  help="Share of matches where the highest-probability "
+                       "outcome (home / draw / away) was the actual one.")
+        c3.metric("Exact-score hits", f"{exact*100:.1f}%",
+                  help="Share of matches where the modal score line "
+                       "exactly matched the final result.")
+        c4.metric("Brier score", f"{brier:.3f}",
+                  help="Lower is better. Uniform 1/3 guess scores ~0.667; "
+                       "a perfect call scores 0.")
+        st.caption(f"Goal RMSE (modal vs actual, per side): {goal_rmse:.2f}")
+
+        # Per-match table
+        st.markdown("**Per-match grading**")
+        WINNER_MAP = {"H": "home", "D": "draw", "A": "away"}
+        view = finished.copy()
+        view["Date"] = view["match_date"].fillna("")
+        view["Stage"] = view["stage"]
+        view["Match"] = (view["home_team"] + " vs " + view["away_team"])
+        view["Predicted"] = (view["modal_home_score"].astype("Int64").astype(str)
+                             + " – "
+                             + view["modal_away_score"].astype("Int64").astype(str))
+        view["Actual"] = (view["home_score"].astype("Int64").astype(str)
+                          + " – "
+                          + view["away_score"].astype("Int64").astype(str))
+        view["Favourite"] = view.apply(
+            lambda r: ("Draw" if r["pred_outcome"] == "D"
+                       else r["home_team"] if r["pred_outcome"] == "H"
+                       else r["away_team"]),
+            axis=1)
+        view["Winner"] = view.apply(
+            lambda r: ("Draw" if r["outcome"] == "D"
+                       else r["home_team"] if r["outcome"] == "H"
+                       else r["away_team"]),
+            axis=1)
+        view["Hit?"] = view["correct"].map({True: "yes", False: "no"})
+        view["P(actual) %"] = (view["pred_p_actual"] * 100).round(1)
+        st.dataframe(
+            view[["Date", "Stage", "Match", "Predicted", "Actual",
+                  "Favourite", "Winner", "Hit?", "P(actual) %"]]
+            .sort_values("Date"),
+            hide_index=True, width=1400,
+        )
+
+        # Outcome-level breakdown
+        st.markdown("**Calibration by predicted favourite**")
+        cal = (finished.assign(bucket=pd.cut(
+            finished["pred_p_actual"], bins=[0, .4, .55, .7, 1.0],
+            labels=["≤40%", "40–55%", "55–70%", ">70%"], include_lowest=True))
+            .groupby("bucket")
+            .agg(n=("correct", "size"),
+                 hit_rate=("correct", "mean"),
+                 mean_predicted=("pred_p_actual", "mean"))
+            .reset_index())
+        cal["hit_rate"] = (cal["hit_rate"] * 100).round(1)
+        cal["mean_predicted"] = (cal["mean_predicted"] * 100).round(1)
+        cal = cal.rename(columns={
+            "bucket": "Confidence band",
+            "n": "Matches",
+            "mean_predicted": "Avg predicted %",
+            "hit_rate": "Actual hit rate %"})
+        st.dataframe(cal, hide_index=True, width=700)
+        st.caption(
+            "If the model is well-calibrated, 'Actual hit rate %' tracks "
+            "'Avg predicted %' inside each band. Sample sizes are small "
+            "early in the tournament — read with a grain of salt.")
 
 
 with tab_method:

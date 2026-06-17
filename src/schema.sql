@@ -169,6 +169,27 @@ CREATE TABLE IF NOT EXISTS predictions (
     FOREIGN KEY (fixture_id) REFERENCES wc2026_fixtures(fixture_id)
 );
 
+-- Actual results, populated as the tournament unfolds. One row per fixture
+-- once it kicks off; null scores mean the match is scheduled or in-play.
+-- The Evaluation tab joins this to predictions to grade the model.
+CREATE TABLE IF NOT EXISTS actual_results (
+    fixture_id      INTEGER PRIMARY KEY,
+    match_date      TEXT,                       -- ISO yyyy-mm-dd (UTC kickoff date)
+    kickoff_utc     TEXT,                       -- ISO 8601 UTC
+    home_score      INTEGER,                    -- full-time
+    away_score      INTEGER,                    -- full-time
+    home_score_et   INTEGER,                    -- after extra time (knockout)
+    away_score_et   INTEGER,
+    home_pens       INTEGER,                    -- penalty shootout
+    away_pens       INTEGER,
+    outcome         TEXT,                       -- 'H','D','A' (regular time)
+    advanced        TEXT,                       -- 'H' or 'A' for knockouts after AET / pens
+    status          TEXT,                       -- 'SCHEDULED','IN_PLAY','FINISHED'
+    source          TEXT,                       -- 'football-data.org','manual',...
+    fetched_at      TEXT,
+    FOREIGN KEY (fixture_id) REFERENCES wc2026_fixtures(fixture_id)
+);
+
 -- Tournament-level Monte Carlo results
 CREATE TABLE IF NOT EXISTS tournament_sim (
     team                TEXT NOT NULL,

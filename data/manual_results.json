@@ -1,0 +1,5 @@
+[
+  {
+    "_comment": "Hand-edit this file if the football-data.org API can't reach a match yet (delayed feed, schedule changes, etc.). The 'stage' field uses our codes: GROUP, R32, R16, QF, SF, 3RD, FINAL. Knockout entries can include home_pens/away_pens for shootouts."
+  }
+]
