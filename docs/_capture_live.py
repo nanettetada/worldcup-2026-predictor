@@ -74,9 +74,12 @@ try:
         "    ? [...document.body.querySelectorAll('button')] : [];"
         "  const wake = btns.find(b => /get this app back up/i.test(b.innerText));"
         "  if (wake) { wake.click(); return 'wake-clicked'; }"
+        # Tournament tab is ready only when a team name + a percentage
+        # figure are both in the DOM (the dataframes have actually painted).
         "  if (/Statistical Predictor/.test(t) &&"
-        "      (/Championship probability/.test(t)"
-        "       || /Tournament/.test(t) || /Group/.test(t))) {"
+        "      /Championship probability/.test(t) &&"
+        "      /Argentina|Brazil|Japan|Spain|Morocco/.test(t) &&"
+        "      /\\d+\\.\\d/.test(t)) {"
         "    return 'ready';"
         "  }"
         "  if (/Please wait/.test(t) || /Loading/.test(t)) return 'loading';"
